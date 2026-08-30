@@ -12,7 +12,7 @@ const DELETED_KEY='bookingDiaryDeletedV3';
 // Public client configuration only. This publishable key is safe to ship in a browser/PWA.
 // Never place a Supabase secret/service-role key in this file.
 const PRESET_SUPABASE_URL='https://cugwgxocdbmiicrlokjt.supabase.co';
-const PRESET_SUPABASE_KEY='sb_publishable_XAB0hRoIFpvg99KPhwkK4CQ_L09nhjE1';
+const PRESET_SUPABASE_KEY='sb_publishable_XAB0hRoIFpv99KPhwkK4CQ_L09nhjE1';
 
 const defaultSettings={
   defaultReminderDays:2,
@@ -834,7 +834,7 @@ window.addEventListener('online',()=>{if(cloudSession&&settings.autoSync)syncAll
 window.addEventListener('focus',()=>{if(cloudSession&&settings.autoSync)syncAll(false);});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&cloudSession&&settings.autoSync)syncAll(false);});
 setInterval(()=>{if(document.visibilityState==='visible'&&cloudSession&&settings.autoSync&&navigator.onLine)syncAll(false);},120000);
-if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js').catch(()=>{});
+if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js?v=3.3.2').catch(()=>{});
 setInterval(notifyDue,60000);setTimeout(notifyDue,1000);
 setTimeout(()=>{if(cloudSession&&cloudConfigured()&&settings.autoSync)syncAll(false);},1800);
 
