@@ -12,7 +12,7 @@ const DELETED_KEY='bookingDiaryDeletedV3';
 // Public client configuration only. This publishable key is safe to ship in a browser/PWA.
 // Never place a Supabase secret/service-role key in this file.
 const PRESET_SUPABASE_URL='https://cugwgxocdbmiicrlokjt.supabase.co';
-const PRESET_SUPABASE_KEY='sb_publishable_XAB0hRolFpvg99KPhwkK4CQ_L09nhjE1';
+const PRESET_SUPABASE_KEY='sb_publishable_XAB0hRoIFpvg99KPhwkK4CQ_L09nhjE1';
 
 const defaultSettings={
   defaultReminderDays:2,
