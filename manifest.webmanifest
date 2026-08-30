@@ -1,7 +1,7 @@
 {
   "name": "Booking Diary",
   "short_name": "Booking Diary",
-  "description": "Private booking diary with payments, calendar and reminders.",
+  "description": "Private booking manager with green booking calendar dates, month-wise payment tracking, reminders and optional cloud sync.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
