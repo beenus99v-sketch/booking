@@ -9,11 +9,16 @@ const OLD_SETTINGS='bookingDiarySettingsV2';
 const SESSION_KEY='bookingDiaryCloudSessionV3';
 const DELETED_KEY='bookingDiaryDeletedV3';
 
+// Public client configuration only. This publishable key is safe to ship in a browser/PWA.
+// Never place a Supabase secret/service-role key in this file.
+const PRESET_SUPABASE_URL='https://cugwgxocdbmiicrlokjt.supabase.co';
+const PRESET_SUPABASE_KEY='sb_publishable_XAB0hRolFpvg99KPhwkK4CQ_L09nhjE1';
+
 const defaultSettings={
   defaultReminderDays:2,
   defaultReminderTime:'09:00',
-  supabaseUrl:'',
-  supabaseAnonKey:'',
+  supabaseUrl:PRESET_SUPABASE_URL,
+  supabaseAnonKey:PRESET_SUPABASE_KEY,
   cloudEmail:'',
   autoSync:true,
   driveBackupEnabled:false,
@@ -36,6 +41,8 @@ if(!bookings.length){
   if(old.length){bookings=old;localStorage.setItem(KEY,JSON.stringify(bookings));}
 }
 let settings={...defaultSettings,...readJSON(OLD_SETTINGS,{}),...readJSON(SETTINGS_KEY,{})};
+settings.supabaseUrl=PRESET_SUPABASE_URL;
+settings.supabaseAnonKey=PRESET_SUPABASE_KEY;
 let cloudSession=readJSON(SESSION_KEY,null);
 let deletedIds=readJSON(DELETED_KEY,[]);
 
@@ -424,14 +431,13 @@ function settingsPage(){
     <div class="installbox"><h3>Install on this phone</h3><p class="muted">Android: Chrome → Install App / Add to Home Screen. iPhone: Safari → Share → Add to Home Screen.</p>${installPrompt?'<button id="install" class="btn primary small">Install App</button>':''}</div>
     <div class="panel"><h3>Cloud Sync — Same Data on Android & iPhone</h3>
       <div class="cloud-status"><div><span class="dot ${signed?'ok':cloudConfigured()?'warn':''}"></span><b>${signed?'Signed in & ready':cloudConfigured()?'Configured — sign in':'Not configured'}</b><div class="mini">${signed?esc(settings.cloudEmail||cloudSession.user?.email||''): 'Supabase keeps the live database outside GitHub and outside the phone.'}</div></div>${signed?'<button id="syncNow" class="btn primary small">↻ Sync Now</button>':''}</div>
+      <div class="preset-cloud"><span class="dot ok"></span><div><b>Cloud server pre-configured</b><div class="mini">No Supabase URL or key is required on Android, iPhone or laptop.</div></div></div>
       <div class="grid">
-        <label class="label wide">Supabase Project URL<input id="supabaseUrl" placeholder="https://xxxx.supabase.co" value="${esc(settings.supabaseUrl)}"></label>
-        <label class="label wide">Supabase Anon / Publishable Key<input id="supabaseKey" placeholder="Public anon / publishable key" value="${esc(settings.supabaseAnonKey)}"></label>
-        <label class="label">Email<input id="cloudEmail" type="email" autocomplete="username" value="${esc(settings.cloudEmail)}"></label>
+        <label class="label">Email<input id="cloudEmail" type="email" autocomplete="username" value="${esc(settings.cloudEmail)}" placeholder="Same email on every device"></label>
         <label class="label">Password<input id="cloudPassword" type="password" autocomplete="current-password" placeholder="Password"></label>
       </div>
-      <div class="quickrow" style="margin-top:10px">${signed?'<button id="signOut" class="btn secondary small">Sign Out</button>':'<button id="signIn" class="btn primary small">Sign In</button><button id="signUp" class="btn secondary small">Create Account</button>'}<button id="saveCloudConfig" class="btn ghost small">Save Cloud Settings</button></div>
-      <p class="syncnote">Run <b>supabase-setup.sql</b> once. Then sign in with the same account on every phone. Never use a service-role key in this app.</p>
+      <div class="quickrow" style="margin-top:10px">${signed?'<button id="signOut" class="btn secondary small">Sign Out</button>':'<button id="signIn" class="btn primary small">Sign In</button><button id="signUp" class="btn secondary small">Create Account</button>'}</div>
+      <p class="syncnote">On every phone, only sign in with the <b>same email and password</b>. The public Supabase connection is already built into this app. Never use a service-role/secret key in a browser app.</p>
     </div>
 
     <div class="panel drive-panel"><h3>Google Drive Automatic Safety Backup</h3>
@@ -579,7 +585,6 @@ function bindSettings(){
   const install=document.querySelector('#install');if(install)install.onclick=async()=>{if(installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;render();}};
   const dd=document.querySelector('#defaultDays');if(dd)dd.onchange=e=>{settings.defaultReminderDays=Number(e.target.value);saveSettings();};
   const dt=document.querySelector('#defaultTime');if(dt)dt.onchange=e=>{settings.defaultReminderTime=e.target.value;saveSettings();};
-  const saveCloud=document.querySelector('#saveCloudConfig');if(saveCloud)saveCloud.onclick=()=>{readCloudFields();saveSettings();toast('Cloud settings saved');render();};
   const signIn=document.querySelector('#signIn');if(signIn)signIn.onclick=()=>cloudAuth('login');
   const signUp=document.querySelector('#signUp');if(signUp)signUp.onclick=()=>cloudAuth('signup');
   const signOut=document.querySelector('#signOut');if(signOut)signOut.onclick=()=>{cloudSession=null;saveSession();toast('Signed out');render();};
@@ -598,9 +603,9 @@ function bindSettings(){
   const oldFile=document.querySelector('#oldImportFile');if(oldFile)oldFile.onchange=prepareOldImport;
 }
 function readCloudFields(){
-  const url=document.querySelector('#supabaseUrl'),key=document.querySelector('#supabaseKey'),email=document.querySelector('#cloudEmail');
-  if(url)settings.supabaseUrl=url.value.trim().replace(/\/$/,'');
-  if(key)settings.supabaseAnonKey=key.value.trim();
+  const email=document.querySelector('#cloudEmail');
+  settings.supabaseUrl=PRESET_SUPABASE_URL;
+  settings.supabaseAnonKey=PRESET_SUPABASE_KEY;
   if(email)settings.cloudEmail=email.value.trim();
 }
 function readDriveFields(){
@@ -621,7 +626,7 @@ async function parseResponse(r){
 async function cloudAuth(mode){
   readCloudFields();saveSettings();
   const password=document.querySelector('#cloudPassword')?.value||'';
-  if(!cloudConfigured())return toast('Add Supabase URL and anon key first');
+  if(!cloudConfigured())return toast('Cloud server configuration is unavailable');
   if(!settings.cloudEmail||password.length<6)return toast('Enter email and password (6+ characters)');
   try{
     const endpoint=mode==='signup'?'/auth/v1/signup':'/auth/v1/token?grant_type=password';
@@ -826,6 +831,9 @@ function download(blob,name){const u=URL.createObjectURL(blob),a=document.create
 
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;render();});
 window.addEventListener('online',()=>{if(cloudSession&&settings.autoSync)syncAll(false);if(settings.driveBackupEnabled&&driveConfigured())scheduleDriveBackup(1200);});
+window.addEventListener('focus',()=>{if(cloudSession&&settings.autoSync)syncAll(false);});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&cloudSession&&settings.autoSync)syncAll(false);});
+setInterval(()=>{if(document.visibilityState==='visible'&&cloudSession&&settings.autoSync&&navigator.onLine)syncAll(false);},120000);
 if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js').catch(()=>{});
 setInterval(notifyDue,60000);setTimeout(notifyDue,1000);
 setTimeout(()=>{if(cloudSession&&cloudConfigured()&&settings.autoSync)syncAll(false);},1800);
