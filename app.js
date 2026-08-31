@@ -116,6 +116,31 @@ const saveSession=()=>cloudSession?localStorage.setItem(SESSION_KEY,JSON.stringi
 const saveDeleted=()=>localStorage.setItem(DELETED_KEY,JSON.stringify(deletedIds));
 const nowISO=()=>new Date().toISOString();
 
+function normalizePushTime(value='09:00'){
+  const m=String(value||'').match(/^(\d{1,2}):(\d{2})$/);
+  let h=m?Number(m[1]):9, min=m?Number(m[2]):0;
+  if(!Number.isFinite(h)||h<0||h>23)h=9;
+  if(!Number.isFinite(min)||min<0||min>59)min=0;
+  return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
+}
+function formatTime12(value){
+  const [h,m]=normalizePushTime(value).split(':').map(Number);
+  const ap=h>=12?'PM':'AM';
+  const h12=h%12||12;
+  return `${h12}:${String(m).padStart(2,'0')} ${ap}`;
+}
+function pushTimeSelects(value){
+  const [currentH,currentM]=normalizePushTime(value).split(':').map(Number);
+  const roundedM=Math.round(currentM/5)*5;
+  const selectedM=roundedM===60?55:roundedM;
+  const hours=Array.from({length:24},(_,h)=>{
+    const ap=h>=12?'PM':'AM', h12=h%12||12;
+    return `<option value="${h}" ${h===currentH?'selected':''}>${h12} ${ap}</option>`;
+  }).join('');
+  const mins=Array.from({length:12},(_,i)=>i*5).map(m=>`<option value="${m}" ${m===selectedM?'selected':''}>:${String(m).padStart(2,'0')}</option>`).join('');
+  return `<div class="push-time-picker"><label class="label">Hour<select id="pushReminderHour">${hours}</select></label><label class="label">Minute<select id="pushReminderMinute">${mins}</select></label></div><div class="mini shared-setting-note">Selected: <b>${esc(formatTime12(`${String(currentH).padStart(2,'0')}:${String(selectedM).padStart(2,'0')}`))}</b> · saved in 24-hour format · shared across all signed-in devices.</div>`;
+}
+
 function toast(text){
   const x=document.createElement('div');x.className='toast';x.textContent=text;document.body.appendChild(x);setTimeout(()=>x.remove(),2600);
 }
@@ -468,18 +493,19 @@ function settingsPage(){
           <div class="mini">Permission: ${esc(perm)}${settings.lastPushRegisteredAt?` · Registered ${new Date(settings.lastPushRegisteredAt).toLocaleString('en-IN')}`:''}</div>
         </div>
       </div>
-      <p class="muted">Background push can alert you even when the Booking Diary app is closed, after the one-time Supabase Push backend setup included with this version. “Test Notification Now” works immediately after permission is granted and shows the exact Android-style notification preview.</p>
+      <p class="muted">Background push works even when the app is closed. Reminder days and time are <b>shared through Cloud Sync</b>: change them on one device and the other signed-in devices pick them up automatically.</p>
       <div class="quickrow">
         <button id="enablePush" class="btn primary small">🔔 Enable Push</button>
         <button id="testNotification" class="btn secondary small">🧪 Test Notification Now</button>
         <button id="testBackgroundPush" class="btn secondary small" ${cloudSession&&settings.pushNotificationsEnabled?'':'disabled'}>☁ Test Background Push</button>
+        <button id="testRealReminder" class="btn secondary small" ${cloudSession&&settings.pushNotificationsEnabled?'':'disabled'}>🗓 Test Real Booking Reminder</button>
       </div>
       <div class="push-rules">
         <div class="mini push-rules-title">Automatic reminder schedule for active bookings</div>
         ${[[7,'7 days before'],[2,'2 days before'],[1,'1 day before'],[0,'Same day']].map(([d,l])=>`<label class="push-rule"><input type="checkbox" data-push-day="${d}" ${Array.isArray(settings.pushReminderDays)&&settings.pushReminderDays.includes(d)?'checked':''}><span>${l}</span></label>`).join('')}
-        <label class="label push-time">Notification Time<input id="pushReminderTime" type="time" value="${esc(settings.pushReminderTime||'09:00')}"></label>
+        <div class="label push-time"><span>Notification Time</span>${pushTimeSelects(settings.pushReminderTime||'09:00')}</div>
       </div>
-      <p class="syncnote">Reminder Off / Cancelled / Completed bookings are not pushed. Duplicate push notifications are blocked server-side. Tap a booking notification to reopen Booking Diary.</p>
+      <p class="syncnote">Automatic server check runs every 5 minutes. Reminder Off / Cancelled / Completed bookings are not pushed. Duplicate push notifications are blocked server-side. Each phone still needs “Enable Push” once.</p>
     </div>
     <div class="panel"><h3>Default Reminder</h3><div class="grid"><label class="label">Days Before<select id="defaultDays">${[1,2,3,7,14].map(x=>`<option value="${x}" ${Number(settings.defaultReminderDays)===x?'selected':''}>${x}</option>`).join('')}</select></label><label class="label">Time<input id="defaultTime" type="time" value="${esc(settings.defaultReminderTime)}"></label></div></div>
     <div class="panel"><h3>Manual Backup & Restore</h3><p class="muted">CSV opens in Excel. JSON is a complete app backup. Keep at least one manual backup occasionally even when cloud backup is enabled.</p><div class="quickrow"><button id="exportCSV" class="btn secondary small">⇩ Export CSV</button><button id="exportJSON" class="btn secondary small">⇩ Export JSON</button><button id="importJSON" class="btn secondary small">⇧ Restore JSON</button><input id="importFile" class="hidden" type="file" accept="application/json,.json"></div></div>
@@ -629,6 +655,33 @@ async function showNotificationPreview(){
     actions:[{action:'open',title:'Open Booking Diary'}]
   });
 }
+async function loadSharedPushRules(){
+  if(!cloudSession)return false;
+  try{
+    const rows=await rest('push_subscriptions?select=reminder_days,reminder_time,updated_at&enabled=eq.true&order=updated_at.desc&limit=1',{method:'GET'});
+    if(!rows?.length)return false;
+    const row=rows[0];
+    const nextDays=Array.isArray(row.reminder_days)?row.reminder_days.map(Number).filter(Number.isFinite):[2];
+    const nextTime=normalizePushTime(row.reminder_time||'09:00');
+    const changed=JSON.stringify(settings.pushReminderDays)!==JSON.stringify(nextDays)||normalizePushTime(settings.pushReminderTime)!==nextTime;
+    settings.pushReminderDays=nextDays.length?nextDays:[2];
+    settings.pushReminderTime=nextTime;
+    saveSettings();
+    return changed;
+  }catch{return false;}
+}
+async function saveSharedPushRules(){
+  if(!cloudSession)return;
+  const s=await ensureSession();
+  const payload={
+    reminder_days:(Array.isArray(settings.pushReminderDays)?settings.pushReminderDays:[2]).map(Number),
+    reminder_time:normalizePushTime(settings.pushReminderTime||'09:00'),
+    updated_at:nowISO()
+  };
+  await rest(`push_subscriptions?user_id=eq.${encodeURIComponent(s.user.id)}`,{
+    method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify(payload)
+  });
+}
 async function savePushSubscription(subscription){
   if(!cloudSession)throw new Error('Sign in to Cloud Sync first');
   const s=await ensureSession();
@@ -637,27 +690,35 @@ async function savePushSubscription(subscription){
     endpoint:subscription.endpoint,
     subscription:subscription.toJSON(),
     reminder_days:(Array.isArray(settings.pushReminderDays)?settings.pushReminderDays:[2]).map(Number),
-    reminder_time:settings.pushReminderTime||'09:00',
+    reminder_time:normalizePushTime(settings.pushReminderTime||'09:00'),
     enabled:true,
     updated_at:nowISO()
   }];
   await rest('push_subscriptions?on_conflict=endpoint',{
-    method:'POST',
-    headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
-    body:JSON.stringify(payload)
+    method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(payload)
   });
+  await saveSharedPushRules();
+}
+async function refreshPushDeviceState(){
+  try{
+    if(!('Notification' in window)||!('PushManager' in window)||Notification.permission!=='granted')return false;
+    const reg=await swReady();
+    const sub=await reg.pushManager.getSubscription();
+    const enabled=!!sub;
+    if(settings.pushNotificationsEnabled!==enabled){settings.pushNotificationsEnabled=enabled;saveSettings();}
+    return enabled;
+  }catch{return false;}
 }
 async function registerPushNotifications(){
   if(!cloudSession)throw new Error('Sign in to Cloud Sync first');
   if(!('Notification' in window)||!('PushManager' in window))throw new Error('Push notifications are not supported in this browser');
+  await loadSharedPushRules();
   let p=Notification.permission;
   if(p!=='granted')p=await Notification.requestPermission();
   if(p!=='granted')throw new Error(p==='denied'?'Notifications are blocked. Enable them from phone/browser site settings.':'Notification permission was not granted');
   const reg=await swReady();
   let sub=await reg.pushManager.getSubscription();
-  if(!sub){
-    sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(VAPID_PUBLIC_KEY)});
-  }
+  if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(VAPID_PUBLIC_KEY)});
   await savePushSubscription(sub);
   settings.pushNotificationsEnabled=true;
   settings.lastPushRegisteredAt=nowISO();
@@ -665,30 +726,36 @@ async function registerPushNotifications(){
   return sub;
 }
 async function updatePushRules(){
-  if(!settings.pushNotificationsEnabled)return;
-  const reg=await swReady();const sub=await reg.pushManager.getSubscription();
-  if(sub&&cloudSession)await savePushSubscription(sub);
+  settings.pushReminderTime=normalizePushTime(settings.pushReminderTime||'09:00');
+  saveSettings();
+  if(!cloudSession)return;
+  await saveSharedPushRules();
+  const reg=await swReady();
+  const sub=await reg.pushManager.getSubscription();
+  if(sub)await savePushSubscription(sub);
 }
-async function testBackgroundPush(){
+async function callPushTest(mode='background'){
   if(!cloudSession)throw new Error('Sign in to Cloud Sync first');
   if(!settings.pushNotificationsEnabled)throw new Error('Enable Push first');
   const s=await ensureSession();
   const r=await fetch(settings.supabaseUrl+'/functions/v1/send-test-push',{
-    method:'POST',
-    headers:cloudHeaders(s.access_token),
-    body:JSON.stringify({message:'Booking Diary background push test'})
+    method:'POST',headers:cloudHeaders(s.access_token),body:JSON.stringify({mode})
   });
-  const data=await parseResponse(r);
-  return data;
+  return parseResponse(r);
 }
+async function testBackgroundPush(){return callPushTest('background');}
+async function testRealReminder(){return callPushTest('real_booking');}
 
 function bindSettings(){
   const back=document.querySelector('#backSettings');if(back)back.onclick=()=>{tab='home';render();};
   const enablePush=document.querySelector('#enablePush');if(enablePush)enablePush.onclick=async()=>{try{toast('Enabling push...');await registerPushNotifications();toast('Push notifications enabled');render();}catch(e){toast(`Push: ${e.message}`);}};
   const testNotification=document.querySelector('#testNotification');if(testNotification)testNotification.onclick=async()=>{try{await showNotificationPreview();toast('Test notification sent');}catch(e){toast(`Test: ${e.message}`);}};
-  const testBackground=document.querySelector('#testBackgroundPush');if(testBackground)testBackground.onclick=async()=>{try{toast('Sending background push...');await testBackgroundPush();toast('Background push sent');}catch(e){toast(`Push test: ${e.message}`);}};
-  document.querySelectorAll('[data-push-day]').forEach(x=>x.onchange=async()=>{settings.pushReminderDays=[...document.querySelectorAll('[data-push-day]:checked')].map(el=>Number(el.dataset.pushDay)).sort((a,b)=>b-a);if(!settings.pushReminderDays.length)settings.pushReminderDays=[2];saveSettings();try{await updatePushRules();}catch{};render();});
-  const pushTime=document.querySelector('#pushReminderTime');if(pushTime)pushTime.onchange=async e=>{settings.pushReminderTime=e.target.value||'09:00';saveSettings();try{await updatePushRules();}catch{};};
+  const testBackground=document.querySelector('#testBackgroundPush');if(testBackground)testBackground.onclick=async()=>{try{toast('Sending background push...');const r=await testBackgroundPush();toast(`Background push sent to ${r.sent??'connected'} device(s)`);}catch(e){toast(`Push test: ${e.message}`);}};
+  const testReal=document.querySelector('#testRealReminder');if(testReal)testReal.onclick=async()=>{try{toast('Sending real booking reminder test...');const r=await testRealReminder();toast(`Real reminder sent to ${r.sent??'connected'} device(s)`);}catch(e){toast(`Reminder test: ${e.message}`);}};
+  document.querySelectorAll('[data-push-day]').forEach(x=>x.onchange=async()=>{settings.pushReminderDays=[...document.querySelectorAll('[data-push-day]:checked')].map(el=>Number(el.dataset.pushDay)).sort((a,b)=>b-a);if(!settings.pushReminderDays.length)settings.pushReminderDays=[2];saveSettings();try{await updatePushRules();toast('Reminder days synced to all devices');}catch(e){toast(`Reminder sync: ${e.message}`);}render();});
+  const savePushTime=async()=>{const h=Number(document.querySelector('#pushReminderHour')?.value??9);const m=Number(document.querySelector('#pushReminderMinute')?.value??0);settings.pushReminderTime=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;saveSettings();try{await updatePushRules();toast(`Reminder time ${formatTime12(settings.pushReminderTime)} synced to all devices`);}catch(e){toast(`Reminder sync: ${e.message}`);}render();};
+  const pushHour=document.querySelector('#pushReminderHour');if(pushHour)pushHour.onchange=savePushTime;
+  const pushMinute=document.querySelector('#pushReminderMinute');if(pushMinute)pushMinute.onchange=savePushTime;
   const install=document.querySelector('#install');if(install)install.onclick=async()=>{if(installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;render();}};
   const dd=document.querySelector('#defaultDays');if(dd)dd.onchange=e=>{settings.defaultReminderDays=Number(e.target.value);saveSettings();};
   const dt=document.querySelector('#defaultTime');if(dt)dt.onchange=e=>{settings.defaultReminderTime=e.target.value;saveSettings();};
@@ -792,6 +859,7 @@ async function syncAll(showToast=false){
       const payload=bookings.map(b=>({id:b.id,user_id:s.user.id,data:b,updated_at:b.updatedAt||nowISO()}));
       await rest('bookings?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(payload)});
     }
+    await loadSharedPushRules();
     if(showToast)toast('Cloud sync complete');
     const launchId=new URLSearchParams(location.search).get('booking');
     if(launchId&&bookings.some(b=>b.id===launchId)){selectedId=launchId;tab='detail';try{history.replaceState({},'',location.pathname);}catch{}}
@@ -941,12 +1009,13 @@ function download(blob,name){const u=URL.createObjectURL(blob),a=document.create
 
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;render();});
 window.addEventListener('online',()=>{if(cloudSession&&settings.autoSync)syncAll(false);if(settings.driveBackupEnabled&&driveConfigured())scheduleDriveBackup(1200);});
-window.addEventListener('focus',()=>{if(cloudSession&&settings.autoSync)syncAll(false);});
+window.addEventListener('focus',async()=>{await refreshPushDeviceState();if(cloudSession&&settings.autoSync)syncAll(false);});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&cloudSession&&settings.autoSync)syncAll(false);});
-setInterval(()=>{if(document.visibilityState==='visible'&&cloudSession&&settings.autoSync&&navigator.onLine)syncAll(false);},120000);
-if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js?v=3.3.2-push-1').catch(()=>{});
+setInterval(()=>{if(document.visibilityState==='visible'&&cloudSession&&settings.autoSync&&navigator.onLine)syncAll(false);},60000);
+setInterval(async()=>{if(document.visibilityState==='visible'&&cloudSession&&navigator.onLine){const changed=await loadSharedPushRules();if(changed&&tab==='settings')render();}},30000);
+if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js?v=3.3.2-reminder-sync-5m-1').catch(()=>{});
 setInterval(notifyDue,60000);setTimeout(notifyDue,1000);
-setTimeout(()=>{if(cloudSession&&cloudConfigured()&&settings.autoSync)syncAll(false);},1800);
+setTimeout(async()=>{await refreshPushDeviceState();if(cloudSession&&cloudConfigured()&&settings.autoSync)syncAll(false);},1800);
 const initialLaunchId=new URLSearchParams(location.search).get('booking');if(initialLaunchId&&bookings.some(b=>b.id===initialLaunchId)){selectedId=initialLaunchId;tab='detail';}
 
 render();
