@@ -13,6 +13,7 @@ const DELETED_KEY='bookingDiaryDeletedV3';
 // Never place a Supabase secret/service-role key in this file.
 const PRESET_SUPABASE_URL='https://cugwgxocdbmiicrlokjt.supabase.co';
 const PRESET_SUPABASE_KEY='sb_publishable_XAB0hRoIFpv99KPhwkK4CQ_L09nhjE1';
+const VAPID_PUBLIC_KEY='BHLNrlYFj-cqaCYV6_UcW1oQAef8afzQSm7ZroJ8IQITC1p49vJ50I__6Xj7YQfodOGmhN2snly-EBB4Kp4317w';
 
 const defaultSettings={
   defaultReminderDays:2,
@@ -27,7 +28,11 @@ const defaultSettings={
   driveBackupToken:'',
   driveBackupFolder:'Booking Diary Backups',
   lastDriveBackupAt:'',
-  lastDriveBackupStatus:'Never'
+  lastDriveBackupStatus:'Never',
+  pushNotificationsEnabled:false,
+  pushReminderDays:[2,1,0],
+  pushReminderTime:'09:00',
+  lastPushRegisteredAt:''
 };
 
 function readJSON(key,fallback){
@@ -454,7 +459,28 @@ function settingsPage(){
 
     <div class="panel"><h3>Old Diary / Historical Bookings</h3><p class="muted">Add old entries one-by-one using “Old / Historical Booking”, or import many rows from CSV / Excel. Existing bookings are never replaced; imports are merged and likely duplicates are skipped.</p><div class="quickrow"><button id="downloadTemplate" class="btn secondary small">⇩ Download Import Template</button><button id="importOld" class="btn primary small">⇧ Import CSV / Excel</button><input id="oldImportFile" class="hidden" type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"></div><div class="mini" style="margin-top:8px">Historical records currently detected: ${oldCount}</div></div>
 
-    <div class="panel"><h3>Notifications</h3><p class="muted">Permission: <b>${perm}</b>. In-app reminders appear whenever the app opens. For the most reliable closed-app reminder, also use “Phone Calendar Reminder” inside each booking.</p><button id="notify" class="btn secondary small">Enable Notifications</button></div>
+    <div class="panel push-panel">
+      <h3>Push Notifications</h3>
+      <div class="cloud-status">
+        <div>
+          <span class="dot ${settings.pushNotificationsEnabled&&perm==='granted'?'ok':perm==='denied'?'bad':'warn'}"></span>
+          <b>${settings.pushNotificationsEnabled&&perm==='granted'?'Push notifications ON':perm==='denied'?'Notifications blocked':'Push notifications not enabled'}</b>
+          <div class="mini">Permission: ${esc(perm)}${settings.lastPushRegisteredAt?` · Registered ${new Date(settings.lastPushRegisteredAt).toLocaleString('en-IN')}`:''}</div>
+        </div>
+      </div>
+      <p class="muted">Background push can alert you even when the Booking Diary app is closed, after the one-time Supabase Push backend setup included with this version. “Test Notification Now” works immediately after permission is granted and shows the exact Android-style notification preview.</p>
+      <div class="quickrow">
+        <button id="enablePush" class="btn primary small">🔔 Enable Push</button>
+        <button id="testNotification" class="btn secondary small">🧪 Test Notification Now</button>
+        <button id="testBackgroundPush" class="btn secondary small" ${cloudSession&&settings.pushNotificationsEnabled?'':'disabled'}>☁ Test Background Push</button>
+      </div>
+      <div class="push-rules">
+        <div class="mini push-rules-title">Automatic reminder schedule for active bookings</div>
+        ${[[7,'7 days before'],[2,'2 days before'],[1,'1 day before'],[0,'Same day']].map(([d,l])=>`<label class="push-rule"><input type="checkbox" data-push-day="${d}" ${Array.isArray(settings.pushReminderDays)&&settings.pushReminderDays.includes(d)?'checked':''}><span>${l}</span></label>`).join('')}
+        <label class="label push-time">Notification Time<input id="pushReminderTime" type="time" value="${esc(settings.pushReminderTime||'09:00')}"></label>
+      </div>
+      <p class="syncnote">Reminder Off / Cancelled / Completed bookings are not pushed. Duplicate push notifications are blocked server-side. Tap a booking notification to reopen Booking Diary.</p>
+    </div>
     <div class="panel"><h3>Default Reminder</h3><div class="grid"><label class="label">Days Before<select id="defaultDays">${[1,2,3,7,14].map(x=>`<option value="${x}" ${Number(settings.defaultReminderDays)===x?'selected':''}>${x}</option>`).join('')}</select></label><label class="label">Time<input id="defaultTime" type="time" value="${esc(settings.defaultReminderTime)}"></label></div></div>
     <div class="panel"><h3>Manual Backup & Restore</h3><p class="muted">CSV opens in Excel. JSON is a complete app backup. Keep at least one manual backup occasionally even when cloud backup is enabled.</p><div class="quickrow"><button id="exportCSV" class="btn secondary small">⇩ Export CSV</button><button id="exportJSON" class="btn secondary small">⇩ Export JSON</button><button id="importJSON" class="btn secondary small">⇧ Restore JSON</button><input id="importFile" class="hidden" type="file" accept="application/json,.json"></div></div>
     <div class="panel"><h3>Data Safety Summary</h3>${row('Bookings on this device',String(bookings.length))}${row('Old / Historical',String(oldCount))}${row('Pending Balance',money(bookings.filter(isActive).reduce((s,b)=>s+Number(b.balance||0),0)))}${row('Supabase Live Copy',signed?'Connected':'Not connected')}${row('Google Drive Backup',driveReady?(settings.driveBackupEnabled?'Automatic':'Configured'):'Not configured')}</div>
@@ -579,9 +605,90 @@ function notifyDue(){
   if(changed)localStorage.setItem('bookingDiaryNotifiedV3',JSON.stringify(seen));
 }
 
+
+function urlBase64ToUint8Array(base64String){
+  const padding='='.repeat((4-base64String.length%4)%4);
+  const base64=(base64String+padding).replace(/-/g,'+').replace(/_/g,'/');
+  const raw=atob(base64);return Uint8Array.from([...raw].map(c=>c.charCodeAt(0)));
+}
+async function swReady(){
+  if(!('serviceWorker' in navigator))throw new Error('Service Worker is not supported on this device');
+  return navigator.serviceWorker.ready;
+}
+async function showNotificationPreview(){
+  if(!('Notification' in window))throw new Error('Notifications are not supported on this device');
+  let p=Notification.permission;
+  if(p!=='granted')p=await Notification.requestPermission();
+  if(p!=='granted')throw new Error(p==='denied'?'Notification permission is blocked in phone/browser settings':'Notification permission was not granted');
+  const reg=await swReady();
+  await reg.showNotification('Booking in 2 Days',{
+    body:'Vaibhaw Singh — Bridal • 2 Sep 2026\nSonari, Sultanpur • Balance Due ₹9,500',
+    icon:'icon-192.png',badge:'icon-192.png',tag:'booking-diary-test-preview',
+    renotify:true,vibrate:[180,80,180],
+    data:{url:'./',test:true},
+    actions:[{action:'open',title:'Open Booking Diary'}]
+  });
+}
+async function savePushSubscription(subscription){
+  if(!cloudSession)throw new Error('Sign in to Cloud Sync first');
+  const s=await ensureSession();
+  const payload=[{
+    user_id:s.user.id,
+    endpoint:subscription.endpoint,
+    subscription:subscription.toJSON(),
+    reminder_days:(Array.isArray(settings.pushReminderDays)?settings.pushReminderDays:[2]).map(Number),
+    reminder_time:settings.pushReminderTime||'09:00',
+    enabled:true,
+    updated_at:nowISO()
+  }];
+  await rest('push_subscriptions?on_conflict=endpoint',{
+    method:'POST',
+    headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+    body:JSON.stringify(payload)
+  });
+}
+async function registerPushNotifications(){
+  if(!cloudSession)throw new Error('Sign in to Cloud Sync first');
+  if(!('Notification' in window)||!('PushManager' in window))throw new Error('Push notifications are not supported in this browser');
+  let p=Notification.permission;
+  if(p!=='granted')p=await Notification.requestPermission();
+  if(p!=='granted')throw new Error(p==='denied'?'Notifications are blocked. Enable them from phone/browser site settings.':'Notification permission was not granted');
+  const reg=await swReady();
+  let sub=await reg.pushManager.getSubscription();
+  if(!sub){
+    sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(VAPID_PUBLIC_KEY)});
+  }
+  await savePushSubscription(sub);
+  settings.pushNotificationsEnabled=true;
+  settings.lastPushRegisteredAt=nowISO();
+  saveSettings();
+  return sub;
+}
+async function updatePushRules(){
+  if(!settings.pushNotificationsEnabled)return;
+  const reg=await swReady();const sub=await reg.pushManager.getSubscription();
+  if(sub&&cloudSession)await savePushSubscription(sub);
+}
+async function testBackgroundPush(){
+  if(!cloudSession)throw new Error('Sign in to Cloud Sync first');
+  if(!settings.pushNotificationsEnabled)throw new Error('Enable Push first');
+  const s=await ensureSession();
+  const r=await fetch(settings.supabaseUrl+'/functions/v1/send-test-push',{
+    method:'POST',
+    headers:cloudHeaders(s.access_token),
+    body:JSON.stringify({message:'Booking Diary background push test'})
+  });
+  const data=await parseResponse(r);
+  return data;
+}
+
 function bindSettings(){
   const back=document.querySelector('#backSettings');if(back)back.onclick=()=>{tab='home';render();};
-  const notify=document.querySelector('#notify');if(notify)notify.onclick=async()=>{if(!('Notification' in window))return toast('Notifications not supported here');const p=await Notification.requestPermission();toast(`Notifications: ${p}`);render();notifyDue();};
+  const enablePush=document.querySelector('#enablePush');if(enablePush)enablePush.onclick=async()=>{try{toast('Enabling push...');await registerPushNotifications();toast('Push notifications enabled');render();}catch(e){toast(`Push: ${e.message}`);}};
+  const testNotification=document.querySelector('#testNotification');if(testNotification)testNotification.onclick=async()=>{try{await showNotificationPreview();toast('Test notification sent');}catch(e){toast(`Test: ${e.message}`);}};
+  const testBackground=document.querySelector('#testBackgroundPush');if(testBackground)testBackground.onclick=async()=>{try{toast('Sending background push...');await testBackgroundPush();toast('Background push sent');}catch(e){toast(`Push test: ${e.message}`);}};
+  document.querySelectorAll('[data-push-day]').forEach(x=>x.onchange=async()=>{settings.pushReminderDays=[...document.querySelectorAll('[data-push-day]:checked')].map(el=>Number(el.dataset.pushDay)).sort((a,b)=>b-a);if(!settings.pushReminderDays.length)settings.pushReminderDays=[2];saveSettings();try{await updatePushRules();}catch{};render();});
+  const pushTime=document.querySelector('#pushReminderTime');if(pushTime)pushTime.onchange=async e=>{settings.pushReminderTime=e.target.value||'09:00';saveSettings();try{await updatePushRules();}catch{};};
   const install=document.querySelector('#install');if(install)install.onclick=async()=>{if(installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;render();}};
   const dd=document.querySelector('#defaultDays');if(dd)dd.onchange=e=>{settings.defaultReminderDays=Number(e.target.value);saveSettings();};
   const dt=document.querySelector('#defaultTime');if(dt)dt.onchange=e=>{settings.defaultReminderTime=e.target.value;saveSettings();};
@@ -633,7 +740,7 @@ async function cloudAuth(mode){
     const r=await fetch(settings.supabaseUrl+endpoint,{method:'POST',headers:cloudHeaders(),body:JSON.stringify({email:settings.cloudEmail,password})});
     const data=await parseResponse(r);
     if(mode==='signup'&&!data.access_token){toast('Account created. Check email if confirmation is required, then Sign In.');return;}
-    cloudSession=normalizeSession(data);saveSession();toast(mode==='signup'?'Account created & signed in':'Signed in');render();await syncAll(true);
+    cloudSession=normalizeSession(data);saveSession();toast(mode==='signup'?'Account created & signed in':'Signed in');render();await syncAll(true);if(settings.pushNotificationsEnabled){try{await registerPushNotifications();}catch{}}
   }catch(e){toast(`Cloud: ${e.message}`);}
 }
 function normalizeSession(data){
@@ -685,7 +792,10 @@ async function syncAll(showToast=false){
       const payload=bookings.map(b=>({id:b.id,user_id:s.user.id,data:b,updated_at:b.updatedAt||nowISO()}));
       await rest('bookings?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(payload)});
     }
-    if(showToast)toast('Cloud sync complete');render();
+    if(showToast)toast('Cloud sync complete');
+    const launchId=new URLSearchParams(location.search).get('booking');
+    if(launchId&&bookings.some(b=>b.id===launchId)){selectedId=launchId;tab='detail';try{history.replaceState({},'',location.pathname);}catch{}}
+    render();
   }catch(e){if(showToast)toast(`Sync failed: ${e.message}`);}finally{syncing=false;}
 }
 
@@ -834,9 +944,10 @@ window.addEventListener('online',()=>{if(cloudSession&&settings.autoSync)syncAll
 window.addEventListener('focus',()=>{if(cloudSession&&settings.autoSync)syncAll(false);});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&cloudSession&&settings.autoSync)syncAll(false);});
 setInterval(()=>{if(document.visibilityState==='visible'&&cloudSession&&settings.autoSync&&navigator.onLine)syncAll(false);},120000);
-if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js?v=3.3.2').catch(()=>{});
+if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js?v=3.3.2-push-1').catch(()=>{});
 setInterval(notifyDue,60000);setTimeout(notifyDue,1000);
 setTimeout(()=>{if(cloudSession&&cloudConfigured()&&settings.autoSync)syncAll(false);},1800);
+const initialLaunchId=new URLSearchParams(location.search).get('booking');if(initialLaunchId&&bookings.some(b=>b.id===initialLaunchId)){selectedId=initialLaunchId;tab='detail';}
 
 render();
 })();
